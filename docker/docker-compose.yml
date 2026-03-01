@@ -1,0 +1,97 @@
+version: '3.8'
+
+x-pg-version: &pg-version ${PG_VERSION:-18}
+x-pg-version-full: &pg-version-full ${PG_VERSION_FULL:-18.1}
+
+services:
+  pg_cardano_builder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        PG_VERSION: *pg-version
+        PG_VERSION_FULL: *pg-version-full
+    image: pg_cardano:pg${PG_VERSION_FULL:-18.1}
+    container_name: pg_cardano_builder
+    volumes:
+      - pg_cardano_extension:/usr/share/postgresql/
+
+  postgres:
+    image: postgres:${PG_VERSION_FULL:-18.1}
+    container_name: pg_cardano_postgres
+    environment:
+      POSTGRES_DB: cardano_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - pg_cardano_extension:/usr/share/postgresql/
+      - ./init:/docker-entrypoint-initdb.d/
+    depends_on:
+      pg_cardano_builder:
+        condition: service_completed_successfully
+    command: >
+      bash -c "
+        echo 'Installing pg_cardano extension...'
+        # Copy extension files from builder
+        find /usr/share/postgresql -name 'pg_cardano*' -exec cp {} /usr/share/postgresql/${PG_VERSION:-18}/extension/ \; 2>/dev/null || true
+        find /usr/share/postgresql -name 'libpg_cardano*' -exec cp {} /usr/lib/postgresql/${PG_VERSION:-18}/lib/ \; 2>/dev/null || true
+        echo 'Starting PostgreSQL...'
+        docker-entrypoint.sh postgres
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pg_cardano_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - admin
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # Test extension functionality
+  test_runner:
+    image: postgres:${PG_VERSION_FULL:-18.1}
+    container_name: pg_cardano_test
+    environment:
+      PGHOST: postgres
+      PGDATABASE: cardano_test
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    volumes:
+      - ./tests:/tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - test
+    command: >
+      bash -c "
+        echo 'Running pg_cardano extension tests...'
+        psql -f /tests/test_extension.sql
+      "
+
+volumes:
+  postgres_data:
+  pg_cardano_extension:
+  pgadmin_data:
+
+networks:
+  default:
+    name: pg_cardano_network
