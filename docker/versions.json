@@ -1,0 +1,25 @@
+{
+  "postgresql_versions": [
+    {
+      "major": "16", 
+      "full": "16.13",
+      "supported": true,
+      "default": false
+    },
+    {
+      "major": "17",
+      "full": "17.9",
+      "supported": true,
+      "default": false
+    },
+    {
+      "major": "18",
+      "full": "18.1",
+      "supported": true,
+      "default": true
+    }
+  ],
+  "cargo_pgrx_version": "0.17.0",
+  "rust_version": "1.75.0",
+  "alpine_version": "3.19"
+}

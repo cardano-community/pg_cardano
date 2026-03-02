@@ -1,0 +1,127 @@
+name: Build PostgreSQL Extension Containers
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      pg_versions:
+        description: 'PostgreSQL versions to build (JSON array)'
+        required: false
+        default: '["16", "17", "18"]'
+      push_images:
+        description: 'Push images to registry'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: pg_cardano-extension
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pg_version: ${{ fromJson(inputs.pg_versions || '["16", "17", "18"]') }}
+        include:
+          - pg_version: "16"
+            pg_version_full: "16.13"
+          - pg_version: "17"
+            pg_version_full: "17.9"
+          - pg_version: "18"
+            pg_version_full: "18.1"
+    
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch,suffix=-pg${{ matrix.pg_version_full }}
+          type=ref,event=pr,suffix=-pg${{ matrix.pg_version_full }}
+          type=semver,pattern={{version}}-pg${{ matrix.pg_version_full }}
+          type=semver,pattern={{major}}.{{minor}}-pg${{ matrix.pg_version_full }}
+          type=raw,value=pg${{ matrix.pg_version_full }}
+          type=raw,value=pg${{ matrix.pg_version }},enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./docker/Dockerfile
+        platforms: linux/amd64,linux/arm64
+        build-args: |
+          PG_VERSION=${{ matrix.pg_version }}
+          PG_VERSION_FULL=${{ matrix.pg_version_full }}
+        push: ${{ github.event_name != 'pull_request' && (inputs.push_images != false) }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Generate artifact attestation
+      if: github.event_name != 'pull_request' && (inputs.push_images != false)
+      uses: actions/attest-build-provenance@v1
+      with:
+        subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+        subject-digest: ${{ steps.build.outputs.digest }}
+        push-to-registry: true
+
+  create-manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && (inputs.push_images != false)
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Log in to Container Registry
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create and push multi-version manifest
+      run: |
+        # Create manifest for latest tag pointing to PostgreSQL 18
+        docker buildx imagetools create \
+          -t ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest \
+          ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:pg18.1
+        
+        # Create manifest for major version tags if this is a tagged release
+        if [[ "${{ github.ref_type }}" == "tag" ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${VERSION} \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${VERSION}-pg18.1
+        fi
