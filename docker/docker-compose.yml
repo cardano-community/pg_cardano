@@ -4,21 +4,21 @@ x-pg-version: &pg-version ${PG_VERSION:-18}
 x-pg-version-full: &pg-version-full ${PG_VERSION_FULL:-18.1}
 
 services:
-  pg_cardano_builder:
+  pgcardano_builder:
     build:
       context: ..
       dockerfile: docker/Dockerfile
       args:
         PG_VERSION: *pg-version
         PG_VERSION_FULL: *pg-version-full
-    image: pg_cardano:pg${PG_VERSION_FULL:-18.1}
-    container_name: pg_cardano_builder
+    image: pgcardano:1.2.0-pg${PG_VERSION_FULL:-18.1}-scratch
+    container_name: pgcardano_builder
     volumes:
-      - pg_cardano_extension:/usr/share/postgresql/
+      - pgcardano_extension:/usr/share/postgresql/
 
   postgres:
     image: postgres:${PG_VERSION_FULL:-18.1}
-    container_name: pg_cardano_postgres
+    container_name: pgcardano_postgres
     environment:
       POSTGRES_DB: cardano_test
       POSTGRES_USER: postgres
@@ -28,10 +28,10 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - pg_cardano_extension:/usr/share/postgresql/
+      - pgcardano_extension:/usr/share/postgresql/
       - ./init:/docker-entrypoint-initdb.d/
     depends_on:
-      pg_cardano_builder:
+      pgcardano_builder:
         condition: service_completed_successfully
     command: >
       bash -c "
@@ -50,7 +50,7 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: pg_cardano_pgadmin
+    container_name: pgcardano_pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
@@ -68,7 +68,7 @@ services:
   # Test extension functionality
   test_runner:
     image: postgres:${PG_VERSION_FULL:-18.1}
-    container_name: pg_cardano_test
+    container_name: pgcardano_test
     environment:
       PGHOST: postgres
       PGDATABASE: cardano_test
@@ -89,9 +89,9 @@ services:
 
 volumes:
   postgres_data:
-  pg_cardano_extension:
+  pgcardano_extension:
   pgadmin_data:
 
 networks:
   default:
-    name: pg_cardano_network
+    name: pgcardano_network

@@ -3,13 +3,28 @@
 # Build script for pg_cardano extension container
 set -euo pipefail
 
-# Configuration
+source "$(dirname "$0")/build-utils.sh"
+
 REGISTRY=${REGISTRY:-"cardano-community"}
-IMAGE_NAME=${IMAGE_NAME:-"pg_cardano-extension"}
+EXTENSION_NAME=${EXTENSION_NAME:-"pgcardano"}
 PG_VERSION=${PG_VERSION:-"18"}
 PG_VERSION_FULL=${PG_VERSION_FULL:-"18.1"}
-VERSION=${VERSION:-"pg${PG_VERSION_FULL}"}
-PLATFORM=${PLATFORM:-"linux/amd64,linux/arm64"}
+PLATFORM=${PLATFORM:-"linux/amd64"}
+
+if [[ -z "${ARCH:-}" ]]; then
+    case "$PLATFORM" in
+        *"amd64"*) ARCH="amd64" ;;
+        *"arm64"*) ARCH="arm64" ;;
+        *"386"*) ARCH="386" ;;
+        *) 
+            log_warn "Could not determine architecture from platform '$PLATFORM', defaulting to amd64"
+            ARCH="amd64"
+            ;;
+    esac
+fi
+
+EXT_VERSION=$(get_extension_version)
+DISTRO=$(get_distro_version)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -34,12 +49,21 @@ if [[ ! -f "../Cargo.toml" ]]; then
     exit 1
 fi
 
-FULL_IMAGE_NAME="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-LATEST_IMAGE_NAME="${REGISTRY}/${IMAGE_NAME}:latest"
+# Generate image names
+NEW_IMAGE_NAME=$(generate_image_tag "$REGISTRY" "$EXTENSION_NAME" "$EXT_VERSION" "$PG_VERSION_FULL" "$DISTRO" "$ARCH")
 
-log_info "Building pg_cardano extension container..."
+# Generate compatibility tags
+COMPAT_TAGS=($(generate_compatibility_tags "$REGISTRY" "pgcardano-extension" "$PG_VERSION_FULL" "$PG_VERSION" "$ARCH"))
+LATEST_TAG=$(generate_latest_tag "$REGISTRY" "$EXTENSION_NAME" "$PG_VERSION_FULL" "$ARCH")
+
+log_info "Building pgcardano extension container..."
+log_info "Extension Version: ${EXT_VERSION}"
 log_info "PostgreSQL Version: ${PG_VERSION_FULL}"
-log_info "Image: ${FULL_IMAGE_NAME}"
+log_info "Primary Image: ${NEW_IMAGE_NAME}"
+log_info "Compatibility Tags: ${COMPAT_TAGS[*]}"
+if [[ -n "$LATEST_TAG" ]]; then
+    log_info "Latest Tag: ${LATEST_TAG}"
+fi
 
 # Build the image
 if command -v docker &> /dev/null; then
@@ -53,6 +77,14 @@ fi
 
 log_info "Using ${BUILDER} to build the image..."
 
+TAG_ARGS=("--tag" "$NEW_IMAGE_NAME")
+for tag in "${COMPAT_TAGS[@]}"; do
+    TAG_ARGS+=("--tag" "$tag")
+done
+if [[ -n "$LATEST_TAG" ]]; then
+    TAG_ARGS+=("--tag" "$LATEST_TAG")
+fi
+
 # Build for multiple platforms if supported
 if [[ "${BUILDER}" == "docker" ]] && docker buildx version &> /dev/null; then
     log_info "Building with buildx..."
@@ -61,8 +93,8 @@ if [[ "${BUILDER}" == "docker" ]] && docker buildx version &> /dev/null; then
         --platform "${PLATFORM}" \
         --build-arg PG_VERSION="${PG_VERSION}" \
         --build-arg PG_VERSION_FULL="${PG_VERSION_FULL}" \
-        --tag "${FULL_IMAGE_NAME}" \
-        --tag "${LATEST_IMAGE_NAME}" \
+        --build-arg TARGETARCH="${ARCH}" \
+        "${TAG_ARGS[@]}" \
         --file Dockerfile \
         --push \
         .. 2>/dev/null; then
@@ -72,8 +104,8 @@ if [[ "${BUILDER}" == "docker" ]] && docker buildx version &> /dev/null; then
         docker buildx build \
             --build-arg PG_VERSION="${PG_VERSION}" \
             --build-arg PG_VERSION_FULL="${PG_VERSION_FULL}" \
-            --tag "${FULL_IMAGE_NAME}" \
-            --tag "${LATEST_IMAGE_NAME}" \
+            --build-arg TARGETARCH="${ARCH}" \
+            "${TAG_ARGS[@]}" \
             --file Dockerfile \
             ..
     fi
@@ -82,30 +114,42 @@ else
     ${BUILDER} build \
         --build-arg PG_VERSION="${PG_VERSION}" \
         --build-arg PG_VERSION_FULL="${PG_VERSION_FULL}" \
-        --tag "${FULL_IMAGE_NAME}" \
-        --tag "${LATEST_IMAGE_NAME}" \
+        --build-arg TARGETARCH="${ARCH}" \
+        "${TAG_ARGS[@]}" \
         --file Dockerfile \
         ..
     
     # Maybe Push
     if [[ "${1:-}" == "--push" ]]; then
-        log_info "Pushing image to registry..."
-        ${BUILDER} push "${FULL_IMAGE_NAME}"
-        ${BUILDER} push "${LATEST_IMAGE_NAME}"
+        log_info "Pushing images to registry..."
+        ${BUILDER} push "$NEW_IMAGE_NAME"
+        for tag in "${COMPAT_TAGS[@]}"; do
+            ${BUILDER} push "$tag"
+        done
+        if [[ -n "$LATEST_TAG" ]]; then
+            ${BUILDER} push "$LATEST_TAG"
+        fi
     fi
 fi
 
 log_info "Build completed successfully!"
 log_info "Image tags:"
-log_info "  - ${FULL_IMAGE_NAME}"
-log_info "  - ${LATEST_IMAGE_NAME}"
+log_info "  - ${NEW_IMAGE_NAME} (primary)"
+for tag in "${COMPAT_TAGS[@]}"; do
+    log_info "  - ${tag} (compatibility)"
+done
+if [[ -n "$LATEST_TAG" ]]; then
+    log_info "  - ${LATEST_TAG} (latest)"
+fi
 
 if [[ "${1:-}" != "--push" ]] && [[ "${BUILDER}" != "buildx" ]]; then
-    echo "4. Push the image: ${BUILDER} push ${FULL_IMAGE_NAME}"
+    echo "4. Push the images: ${BUILDER} push ${NEW_IMAGE_NAME}"
 fi
 
 echo
 log_info "Usage examples:"
-echo "# Use in CloudNativePG with PostgreSQL ${PG_VERSION_FULL}"
-echo "  image: ${FULL_IMAGE_NAME}"
+echo "# Use in CloudNativePG with PostgreSQL ${PG_VERSION_FULL} (new pattern):"
+echo "  image: ${NEW_IMAGE_NAME}"
+echo "# Use in CloudNativePG with PostgreSQL ${PG_VERSION_FULL} (compatibility):"
+echo "  image: ${COMPAT_TAGS[0]}"
 echo
